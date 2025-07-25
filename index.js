@@ -9,7 +9,7 @@ const db = new pg.Client({
   user: "postgres",
   host: "localhost",
   database: "world",
-  password: "Abhay@151", // Ensure to use the correct password for your database
+  password: "Abhay@151", // Replace with your actual password
   port: 5432,
 });
 db.connect();
@@ -24,57 +24,86 @@ let users = [
   { id: 2, name: "Jack", color: "powderblue" },
 ];
 
-async function checkVisisted() {
-  const result = await db.query(
-    "SELECT country_code FROM visited_countries JOIN users ON users.id = user_id WHERE user_id = $1; ",
-    [currentUserId]
-  );
-  let countries = [];
-  result.rows.forEach((country) => {
-    countries.push(country.country_code);
-  });
-  return countries;
+async function checkVisited() {
+  try {
+    const result = await db.query(
+      "SELECT country_code FROM visited_countries WHERE user_id = $1;",
+      [currentUserId]
+    );
+    return result.rows.map((row) => row.country_code);
+  } catch (err) {
+    console.error("Error checking visited countries:", err);
+    return [];
+  }
 }
 
 async function getCurrentUser() {
-  const result = await db.query("SELECT * FROM users");
-  users = result.rows;
-  return users.find((user) => user.id == currentUserId);
+  try {
+    const result = await db.query("SELECT * FROM users;");
+    users = result.rows;
+
+    const user = users.find((u) => u.id == currentUserId);
+    return user || null;
+  } catch (err) {
+    console.error("Error getting current user:", err);
+    return null;
+  }
 }
 
 app.get("/", async (req, res) => {
-  const countries = await checkVisisted();
-  const currentUser = await getCurrentUser();
-  res.render("index.ejs", {
-    countries: countries,
-    total: countries.length,
-    users: users,
-    color: currentUser.color,
-  });
+  try {
+    const countries = await checkVisited();
+    const currentUser = await getCurrentUser();
+
+    if (!currentUser) {
+      return res.status(404).send("Current user not found in the database.");
+    }
+
+    res.render("index.ejs", {
+      countries: countries,
+      total: countries.length,
+      users: users,
+      color: currentUser.color,
+    });
+  } catch (err) {
+    console.error("Error loading home page:", err);
+    res.status(500).send("Internal Server Error");
+  }
 });
+
 app.post("/add", async (req, res) => {
   const input = req.body["country"];
   const currentUser = await getCurrentUser();
 
+  if (!currentUser) {
+    return res.status(400).send("Invalid user.");
+  }
+
   try {
     const result = await db.query(
-      "SELECT country_code FROM countries WHERE LOWER(country_name) LIKE '%' || $1 || '%';",
+      "SELECT country_code FROM countries WHERE LOWER(country) LIKE '%' || $1 || '%';",
       [input.toLowerCase()]
     );
 
-    const data = result.rows[0];
-    const countryCode = data.country_code;
+    if (result.rows.length === 0) {
+      return res.status(404).send("Country not found.");
+    }
+
+    const countryCode = result.rows[0].country_code;
+
     try {
       await db.query(
-        "INSERT INTO visited_countries (country_code, user_id) VALUES ($1, $2)",
+        "INSERT INTO visited_countries (country_code, user_id) VALUES ($1, $2);",
         [countryCode, currentUserId]
       );
       res.redirect("/");
-    } catch (err) {
-      console.log(err);
+    } catch (insertErr) {
+      console.error("Error inserting visited country:", insertErr);
+      res.status(500).send("Failed to add country.");
     }
-  } catch (err) {
-    console.log(err);
+  } catch (queryErr) {
+    console.error("Error querying country:", queryErr);
+    res.status(500).send("Error finding country.");
   }
 });
 
@@ -82,7 +111,10 @@ app.post("/user", async (req, res) => {
   if (req.body.add === "new") {
     res.render("new.ejs");
   } else {
-    currentUserId = req.body.user;
+    const selectedId = parseInt(req.body.user);
+    if (!isNaN(selectedId)) {
+      currentUserId = selectedId;
+    }
     res.redirect("/");
   }
 });
@@ -91,17 +123,19 @@ app.post("/new", async (req, res) => {
   const name = req.body.name;
   const color = req.body.color;
 
-  const result = await db.query(
-    "INSERT INTO users (name, color) VALUES($1, $2) RETURNING *;",
-    [name, color]
-  );
-
-  const id = result.rows[0].id;
-  currentUserId = id;
-
-  res.redirect("/");
+  try {
+    const result = await db.query(
+      "INSERT INTO users (name, color) VALUES ($1, $2) RETURNING *;",
+      [name, color]
+    );
+    currentUserId = result.rows[0].id;
+    res.redirect("/");
+  } catch (err) {
+    console.error("Error creating new user:", err);
+    res.status(500).send("Failed to create new user.");
+  }
 });
 
 app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
+  console.log(`✅ Server running on http://localhost:${port}`);
 });
